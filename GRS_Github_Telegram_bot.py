@@ -12,112 +12,118 @@ estado = {}
 # Inicio del bot
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "¡Hola! Soy el bot de Gestión de Riesgo en Entrada (GRE).\nPor favor, indica si la operación es 'long' o 'short'."
+        "\\U0001F527 *Bienvenido al bot de Gestión de Riesgo en Short (GRS)*\n\n"
+        "Por favor, dime el precio de entrada.",
+        parse_mode="Markdown"
     )
-    estado[update.effective_user.id] = "tipo_operacion"
+    estado[update.effective_user.id] = "precio_entrada"
 
 # Procesar mensajes
 async def procesar_datos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     texto = update.message.text.strip().lower().replace(",", ".")
-
+    
     try:
-        if estado.get(user_id) == "tipo_operacion":
-            if texto in ["long", "short"]:
-                datos[user_id] = {"tipo_operacion": texto}
-                estado[user_id] = "precio_entrada"
-                await update.message.reply_text("Perfecto, ahora dime el precio de entrada.")
-            else:
-                await update.message.reply_text("Por favor, indica 'long' o 'short'.")
-        elif estado.get(user_id) == "precio_entrada":
-            datos[user_id]["precio_entrada"] = float(texto)
+        if estado.get(user_id) == "precio_entrada":
+            datos[user_id] = {"tipo_operacion": "short", "precio_entrada": float(texto)}
             estado[user_id] = "capital_total"
             await update.message.reply_text("Dime el capital total de la cuenta (USD).")
+
         elif estado.get(user_id) == "capital_total":
             datos[user_id]["capital_total"] = float(texto)
             estado[user_id] = "porcentaje_riesgo"
             await update.message.reply_text("Dime el porcentaje de riesgo sobre el capital total.")
+
         elif estado.get(user_id) == "porcentaje_riesgo":
             datos[user_id]["porcentaje_riesgo"] = float(texto)
             estado[user_id] = "porcentaje_stop_loss"
             await update.message.reply_text("Dime el porcentaje de stop loss basado en el precio de entrada.")
+
         elif estado.get(user_id) == "porcentaje_stop_loss":
             datos[user_id]["porcentaje_stop_loss"] = float(texto)
             estado[user_id] = "niveles_recompra"
             await update.message.reply_text("Dime la cantidad de niveles de recompra.")
+
         elif estado.get(user_id) == "niveles_recompra":
             datos[user_id]["niveles_recompra"] = int(texto)
+            estado[user_id] = "porcentaje_recompra"
+            await update.message.reply_text("Dime el porcentaje de diferencia entre niveles de recompra.")
+
+        elif estado.get(user_id) == "porcentaje_recompra":
+            datos[user_id]["porcentaje_recompra"] = float(texto)
             estado[user_id] = "niveles_take_profit"
             await update.message.reply_text("Dime la cantidad de niveles de take profit.")
+
         elif estado.get(user_id) == "niveles_take_profit":
             datos[user_id]["niveles_take_profit"] = int(texto)
             estado[user_id] = "porcentaje_take_profit"
             await update.message.reply_text("Dime el porcentaje de diferencia entre niveles de take profit.")
+
         elif estado.get(user_id) == "porcentaje_take_profit":
             datos[user_id]["porcentaje_take_profit"] = float(texto)
             estado[user_id] = None
             await calcular_resultados(update, datos[user_id])
+
         else:
             await update.message.reply_text("Algo salió mal. Intenta de nuevo con /start.")
+
     except ValueError as e:
         await update.message.reply_text(f"Error: {e}. Por favor, introduce un número válido.")
+
     except Exception as e:
         await update.message.reply_text("Ocurrió un error inesperado. Por favor, inténtalo de nuevo más tarde.")
 
+# Calcular resultados
 async def calcular_resultados(update: Update, datos: dict):
     try:
         # Datos ingresados
-        tipo_operacion = datos["tipo_operacion"]
         precio_entrada = datos["precio_entrada"]
         capital_total = datos["capital_total"]
         porcentaje_riesgo = datos["porcentaje_riesgo"]
         porcentaje_stop_loss = datos["porcentaje_stop_loss"]
         niveles_recompra = datos["niveles_recompra"]
+        porcentaje_recompra = datos["porcentaje_recompra"]
         niveles_take_profit = datos["niveles_take_profit"]
         porcentaje_take_profit = datos["porcentaje_take_profit"]
 
-        # 1. Calcular el Stop Loss Global
-        factor = -1 if tipo_operacion == "short" else 1
+        # Calcular Stop Loss Global
         stop_loss_global = precio_entrada * (1 + (porcentaje_stop_loss / 100))
+        if stop_loss_global <= precio_entrada:
+            raise ValueError("El Stop Loss Global para una operación short debe ser mayor que el precio de entrada.")
 
-        # Validación del Stop Loss
-        if tipo_operacion == "short" and stop_loss_global < precio_entrada:
-           raise ValueError("El Stop Loss Global calculado para una operación short debe ser mayor que el precio de entrada.")
-
-        # 2. Riesgo Máximo Permitido
+        # Riesgo Máximo Permitido
         riesgo_maximo = capital_total * (porcentaje_riesgo / 100)
 
-        # 3. Distribución del Riesgo
+        # Distribución del riesgo
         riesgo_por_nivel = riesgo_maximo / (niveles_recompra + 1)
 
-        # 4. Tokens Iniciales
-        tokens_iniciales = round(riesgo_por_nivel / abs(precio_entrada - stop_loss_global), 6)
+        # Tokens iniciales
+        diferencia_stop_loss = abs(precio_entrada - stop_loss_global)
+        tokens_iniciales = round(riesgo_por_nivel / diferencia_stop_loss, 6)
 
-        # 5. Niveles de Recompra
-        primer_nivel_recompra = precio_entrada * 1.015  # 1.5% por encima del precio de entrada
-        ultimo_nivel_recompra = stop_loss_global * 0.9925  # 0.75% por debajo del stop loss global
-
+        # Niveles de Recompra
         precios_recompra = [
-            round(primer_nivel_recompra + i * (ultimo_nivel_recompra - primer_nivel_recompra) / (niveles_recompra - 1), 6)
-            for i in range(niveles_recompra)
+            round(precio_entrada * (1 + (porcentaje_recompra / 100) * i), 6)
+            for i in range(1, niveles_recompra + 1)
         ]
         tokens_recompra = [
-            round(riesgo_por_nivel / abs(precio - stop_loss_global), 6) for precio in precios_recompra
+            round(riesgo_por_nivel / abs(precio - stop_loss_global), 6)
+            for precio in precios_recompra
         ]
 
-        # 6. Niveles de Take Profit
+        # Niveles de Take Profit
         precios_take_profit = [
-            round(precio_entrada * (1 - i * (porcentaje_take_profit / 100)), 6)
+            round(precio_entrada * (1 - (porcentaje_take_profit / 100) * i), 6)
             for i in range(1, niveles_take_profit + 1)
         ]
         tokens_take_profit = [
-            round((tokens_iniciales + sum(tokens_recompra)) * i / sum(range(1, niveles_take_profit + 1)), 6)
+            round(tokens_iniciales * i / sum(range(1, niveles_take_profit + 1)), 6)
             for i in range(1, niveles_take_profit + 1)
         ]
 
-        # Resultados
+        # Formatear resultados
         resultados = (
-            f"*Resultados de Gestión de Riesgo en Entrada (GRE):*\n\n"
+            f"*Resultados de Gestión de Riesgo en Entrada (GRE - SHORT):*\n\n"
             f"*Datos Ingresados:*\n"
         )
         for clave, valor in datos.items():
@@ -137,14 +143,14 @@ async def calcular_resultados(update: Update, datos: dict):
 
     except ValueError as ve:
         await update.message.reply_text(f"Error en la validación: {ve}")
+
     except Exception as e:
         await update.message.reply_text(f"Error al calcular resultados: {e}")
-
 
 # Configuración del bot
 app = ApplicationBuilder().token(TOKEN).build()
 app.add_handler(CommandHandler("start", start))
 app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, procesar_datos))
 
-print("Bot GRE en ejecución...")
+print("Bot GRS en ejecución...")
 app.run_polling()
